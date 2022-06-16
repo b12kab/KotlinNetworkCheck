@@ -2,123 +2,166 @@ package com.example.netcheck
 
 import android.util.Log
 import androidx.annotation.WorkerThread
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.liveData
 import com.example.netcheck.data.NetworkResult
 import com.example.netcheck.data.QuotesService
 import com.example.netcheck.data.RetrofitHelper
 import com.example.netcheck.data.model.QuoteList
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import okio.IOException
 import retrofit2.Response
+import retrofit2.Retrofit
+import java.net.UnknownHostException
 
-class QuoteRepository() {
+class QuoteRepository(
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+) {
     private val TAG = this::class.java.simpleName
     private lateinit var results: Response<QuoteList>
 
-//    lateinit var quoteServiceResults: LiveData<Result<Any?>>
-    lateinit var quoteServiceResults: Flow<Result<Any?>>
+    var dataFetchStarted = false
+    var dataFetchCompleted = false
+    var networkFetchComplete = false
 
-    //    private lateinit var quoteServiceResults: LiveData<Result<QuoteList?>>
-//    val quoteResult: LiveData<Result<QuoteList?>>
-//        get() = quoteServiceResults
-//    var networkResults: LiveData<NetworkResult<Any>> = MutableLiveData()
     var networkResults: Flow<NetworkResult<Any>> = emptyFlow()
 
     var scope: CoroutineScope? = null;
     var job: Job? = null;
 
+    val jobStatus: () -> Boolean
+        get() = {
+            when (job?.isActive) {
+                null -> {
+                    Log.e(TAG, "jobStatus - job isActive is null")
+                    false
+                }
+                true -> {
+                    Log.e(TAG, "jobStatus - job isActive is true")
+                    true
+                }
+                else -> {
+                    Log.e(TAG, "jobStatus - job isActive is false")
+                    false
+                }
+            }
+        }
+
     @WorkerThread
-//    suspend fun initializeQuotesDataSource() {
-    fun initializeQuotesDataSource() {
-        Log.i(TAG, "initialize - before job launch")
-        job = scope?.launch {
+    fun initializeDataSource() {
+        Log.e(TAG, "initialize - before job launch")
+//        job = scope?.launch {
+        scope?.launch {
             networkResults = getData()
         }
-        Log.i(TAG, "initialize - after job: $job - job started: ${job?.start()}, active: ${job?.isActive}")
+        Log.e(TAG, "initialize - after job: $job - job started: ${job?.start()}, active: ${job?.isActive}, completed: ${job?.isCompleted}, cancelled: ${job?.isCancelled}")
     }
 
     @WorkerThread
-    fun getData(): Flow<NetworkResult<Any>> //{
-//        var a = 2
-//        return flow {
-        =  flow {
-            var b = 3
-            try {
-                Log.d(TAG, "getData - before sendLoading true")
-//                sendLoading(true)
-                emit(NetworkResult.Loading(true))
-                Log.d(TAG, "getData - after sendLoading true - before getting service instance")
-                val quotesService = RetrofitHelper.getInstance().create(QuotesService::class.java)
-                Log.d(TAG, "getData - after getting service instance - before getQuotes")
-                val result = quotesService.getQuotes()
-                Log.d(TAG, "getData - after getQuotes - before sendLoading false")
-    //            sendLoading(false)
-    //            Log.d(TAG, "getData - after sendLoading false")
-                if (result != null && result.isSuccessful) {
-                    Log.d(TAG, "getData - result successful")
-                    // Checking the results
-                    Log.d(TAG, result.body().toString())
-                    results = result;
-    //                sendSuccess()
-                    emit(NetworkResult.Success(results))
-                } else {
-                    Log.d(TAG, "getData - result NOT successful")
-    //                sendBadResult()
-                    emit(NetworkResult.Failure(result))
+    fun getData(): Flow<NetworkResult<Any>> =  flow {
+        try {
+            // Before this point, the job is null or set to something which when the flow is started is incorrect.
+            // This will set it to the correct value, so that the variable can be access the appropriate job value
+            // and possibly used to cancel the remainder of the network calls - if used.
+            job = currentCoroutineContext().job
+
+            // Setup the flags
+            Log.e(TAG,"getData - before getting service instance")
+            Log.e(TAG,"getData - job: $job - job started: ${job?.start()}, active: ${job?.isActive}, completed: ${job?.isCompleted}, cancelled: ${job?.isCancelled}")
+            dataFetchStarted = true
+            dataFetchCompleted = false
+
+            val quotesService = RetrofitHelper.getInstance().create(QuotesService::class.java)
+
+            Log.e(TAG,"getData - after getting service instance")
+            Log.e(TAG,"getData - job: $job - job started: ${job?.start()}, active: ${job?.isActive}, completed: ${job?.isCompleted}, cancelled: ${job?.isCancelled}")
+            Log.e(TAG,"getData - scope: $scope - active: ${scope?.isActive}")
+
+            for (netTry in 1..3) {
+                try {
+                    Log.e(TAG,"getData - network try ${netTry} - before coroutine active check")
+                    Log.e(TAG,"getData - jobStatus: ${jobStatus()}")
+                    Log.e(TAG,"getData - job: $job - job started: ${job?.start()}, active: ${job?.isActive}, completed: ${job?.isCompleted}, cancelled: ${job?.isCancelled}")
+                    Log.e(TAG,"getData - scope: $scope - active: ${scope?.isActive}")
+                    Log.e(TAG,"getData - active: ${currentCoroutineContext().isActive}")
+                    Log.e(TAG,"getData - job [CURRENT Context]: ${currentCoroutineContext().job} - job started: ${currentCoroutineContext().job?.start()}, active: ${currentCoroutineContext().job?.isActive}, completed: ${currentCoroutineContext().job?.isCompleted}, cancelled: ${currentCoroutineContext().job?.isCancelled}")
+
+                    yield()
+                    for (i in 5 downTo 1) {
+                        networkFetchComplete = false
+
+                        Log.e(TAG, "getData - network try ${netTry} - before getQuotes, i = $i")
+                        results = quotesService.getQuotes(i)
+                        Log.e(TAG,"getData - network try ${netTry} - after getQuotes - before sleep")
+
+                        if (results != null && results.isSuccessful) {
+//                            Log.e(TAG,"getData - network try ${netTry} - result successful. i = $i; Result data: ${results.body().toString()}")
+                            Log.e(TAG,"getData - network try ${netTry} - result successful. i = $i")
+                            emit(NetworkResult.Success(results))
+                        } else {
+                            Log.e(TAG, "getData - network try ${netTry} - result NOT successful. i = $i")
+                            emit(NetworkResult.Failure(results))
+                        }
+
+                        Log.e(TAG,"getData - network try ${netTry} - after after emit - before delay")
+                        delay(5000);
+                        Log.e(TAG, "getData - network try ${netTry} - after delay")
+                        yield()
+                        networkFetchComplete = true
+                    }
+                    Log.e(TAG, "getData - network try ${netTry} - network - after network section")
+                } catch (uhe: UnknownHostException) {
+                    Log.e(TAG, "getData - network try ${netTry} - network - UnknownHostException: $uhe")
+                    emit(NetworkResult.Exception(uhe))
+                    // cancel the flow
+                    currentCoroutineContext().cancel()
+                } catch (io: IOException) {
+                    Log.e(TAG, "getData - network try ${netTry} - network - IOException: $io")
+                    emit(NetworkResult.Exception(io))
+                    // cancel the flow
+                    currentCoroutineContext().cancel()
+                } catch (e: Exception) {
+                    Log.e(TAG, "getData - network try ${netTry} - network - exception: $e")
+                    throw e
                 }
-            } catch (e: Exception) {
-                Log.i(TAG, "getData - exception: $e")
-//                sendException(e)
-                emit(NetworkResult.Exception(e))
+
+                if (networkFetchComplete) {
+                    Log.e(TAG, "getData - after inner try, networkFetchComplete = true")
+                    break
+                }
+
+                Log.e(TAG, "getData - after networkFetchComplete check")
             }
-        }.cancellable().flowOn(Dispatchers.IO)
-//    }
 
-//    suspend fun sendLoading(loadStatus: Boolean) {
-//        Log.d(TAG, "sendLoading - before withContext")
-////        withContext(Dispatchers.Main) {
-////            Log.d(TAG, "sendLoading - before liveData emit")
-////            networkResults = liveData {
-////                Log.d(TAG, "sendLoading - before emit")
-////                emit(NetworkResult.Loading(loadStatus))
-////                Log.d(TAG, "sendLoading - after emit")
-////            }
-////            Log.d(TAG, "sendLoading - after liveData emit")
-////        }
-//        Log.d(TAG, "sendLoading - after withContext")
-//    }
+            dataFetchStarted = false
+            dataFetchCompleted = true
 
-//    fun sendException(e: Exception) {
-////        quoteServiceResults = liveData {
-////            emit(
-////                Result.failure<Exception>(e)
-////            )
-////        }
-////        networkResults = liveData {
-////            emit(NetworkResult.Exception(e))
-////        }
-//        networkResults = flow { emit(NetworkResult.Exception(e)) }
-//    }
+            Log.e(TAG,"getData - after loop / after sleep")
+            Log.e(TAG,"getData - job: $job - job started: ${job?.start()}, active: ${job?.isActive}, completed: ${job?.isCompleted}, cancelled: ${job?.isCancelled}")
+            Log.e(TAG,"getData - scope: $scope - active: ${scope?.isActive}")
+            Log.e(TAG,"getData - active: ${currentCoroutineContext().isActive}")
+            Log.e(TAG,"getData - job [CURRENT Context]: ${currentCoroutineContext().job} - job started: ${currentCoroutineContext().job?.start()}, active: ${currentCoroutineContext().job?.isActive}, completed: ${currentCoroutineContext().job?.isCompleted}, cancelled: ${currentCoroutineContext().job?.isCancelled}")
 
-//    fun sendBadResult() {
-////        quoteServiceResults = liveData {
-////            emit(Result.failure<ResponseBody?>(results?.errorBody()))
-////        }
-////        networkResults = liveData {
-////            emit(NetworkResult.Failure(results))
-////        }
-//        networkResults = flow { emit(NetworkResult.Failure(results)) }
-//    }
+            yield()
+            Log.e(TAG, "getData - after yield, before networkFetchComplete check")
+            if (!networkFetchComplete) {
+                Log.e(TAG, "getData - NOT - networkFetchComplete failed - network fetch failed for some reason")
+                emit(NetworkResult.Failure(null))
+            }
+        } catch (c: CancellationException) {
+            // do nothing
+        } catch (e: Exception) {
+            Log.e(TAG, "getData - exception: $e")
+            emit(NetworkResult.Exception(e))
+        }
+    }.cancellable().flowOn(ioDispatcher)
 
-//    fun sendSuccess() {
-////        quoteServiceResults = liveData {
-////            emit(Result.success(results?.body()))
-////        }
-////        networkResults = liveData {
-////            emit(NetworkResult.Success(results))
-////        }
-//        networkResults = flow { emit(NetworkResult.Success(results)) }
-//    }
+    @WorkerThread
+    fun cancelDataJob() {
+        Log.e(TAG, "cancelDataSource - initial")
+        if (job != null && job?.isActive == true) {
+            job?.cancel()
+        }
+        Log.e(TAG, "cancelDataSource - after cancel - active: ${job?.isActive}, completed: ${job?.isCompleted}, cancelled: ${job?.isCancelled}")
+    }
+
 }
